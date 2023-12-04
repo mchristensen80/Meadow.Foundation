@@ -1,9 +1,40 @@
-﻿using Meadow.Hardware;
+using Meadow.Hardware;
 using Meadow.Peripherals.Sensors.Distance;
 using Meadow.Units;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+
+// TODO: Does this driver support the three modes of operations? High accuracy, long range, high speed?
+// If not, then we should add a property and/or constructor parameter to select the mode of operation.
+
+// TODO: Research the git commit history on this class in the repository. What issues were fixed?
+
+// There are 4 range profiles available via API example code. I've removed the error checks for brevity.
+// 7.1 High accuracy
+// The following settings have to be applied, before ranging:
+//     Status = VL53L0_SetLimitCheckValue(pMyDevice, VL53L0_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.25 * 65536));
+//     Status = VL53L0_SetLimitCheckValue(pMyDevice, VL53L0_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(18 * 65536));
+//     Status = VL53L0_SetMeasurementTimingBudgetMicroSeconds(pMyDevice, 200000);
+// 7.2 Long range
+// The following setting have to be applied, before ranging:
+//     Status = VL53L0_SetLimitCheckValue(pMyDevice, VL53L0_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.1 * 65536));
+//     Status = VL53L0_SetLimitCheckValue(pMyDevice, VL53L0_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(60 * 65536));
+//     Status = VL53L0_SetMeasurementTimingBudgetMicroSeconds(pMyDevice, 33000);
+//     Status = VL53L0_SetVcselPulsePeriod(pMyDevice, VL53L0_VCSEL_PERIOD_PRE_RANGE, 18);
+//     Status = VL53L0_SetVcselPulsePeriod(pMyDevice, VL53L0_VCSEL_PERIOD_FINAL_RANGE, 14);
+// 7.3 High speed
+// The following setting have to be applied, before ranging:
+//     Status = VL53L0_SetLimitCheckValue(pMyDevice, VL53L0_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.25 * 65536));
+//     Status = VL53L0_SetLimitCheckValue(pMyDevice, VL53L0_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(32 * 65536));
+//     Status = VL53L0_SetMeasurementTimingBudgetMicroSeconds(pMyDevice, 20000);
+
+// Table 6. Example API range profiles
+// ||              |Timing budget |Typical max range   |Typical application                       ||
+// ||Default mode  |30ms          |1.2m (white target) |standard                                  ||
+// ||High accuracy |200ms         |1.2m (white target) |precise measurement                       ||
+// ||Long range    |33ms          |2m (white target)   |long ranging, only for dark conditions    ||
+// ||High Speed    |20ms          |1.2m (white target) |high speed where accuracy is not priority ||
 
 namespace Meadow.Foundation.Sensors.Distance
 {
@@ -98,7 +129,7 @@ namespace Meadow.Foundation.Sensors.Distance
         /// <summary>
         /// Initializes the VL53L0X
         /// </summary>
-        protected async Task Initialize()
+        protected async Task Initialize(bool io_2v8 = true)
         {
             if (IsShutdown)
             {
@@ -108,6 +139,13 @@ namespace Meadow.Foundation.Sensors.Distance
             if (Read(0xC0) != 0xEE || Read(0xC1) != 0xAA || Read(0xC2) != 0x10)
             {
                 throw new Exception("Failed to find expected ID register values");
+            }
+
+            // sensor uses 1V8 mode for I/O by default; switch to 2V8 mode if necessary
+            // https://community.st.com/t5/imaging-sensors/vl53l1x-what-is-the-difference-between-2v8-and-1v8-mode/td-p/277438
+            if (io_2v8)
+            {
+                BusComms.WriteRegister(0x89, (byte)(Read(0x89) | 0x01));
             }
 
             BusComms.WriteRegister(0x88, 0x00);
@@ -121,7 +159,19 @@ namespace Meadow.Foundation.Sensors.Distance
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x80, 0x00);
 
+            // TODO: do we need to disable the signal rate msrc and signal rate pre range limit checks?
+
+            // From https://github.com/pololu/vl53l0x-arduino/blob/master/VL53L0X.cpp
+            // // disable SIGNAL_RATE_MSRC (bit 1) and SIGNAL_RATE_PRE_RANGE (bit 4) limit checks
+            // writeReg(MSRC_CONFIG_CONTROL, readReg(MSRC_CONFIG_CONTROL) | 0x12);
+
+            // // set final range signal rate limit to 0.25 MCPS (million counts per second)
+            // setSignalRateLimit(0.25);
+
             BusComms.WriteRegister((byte)Register.SystemSequenceConfig, 0xFF);
+
+            // TOOD: double check the spad info
+
             var spadInfo = GetSpadInfo();
             int spadCount = spadInfo.Item1;
             bool spad_is_aperture = spadInfo.Item2;
@@ -152,17 +202,21 @@ namespace Meadow.Foundation.Sensors.Distance
 
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x00, 0x00);
+
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x09, 0x00);
             BusComms.WriteRegister(0x10, 0x00);
             BusComms.WriteRegister(0x11, 0x00);
+
             BusComms.WriteRegister(0x24, 0x01);
             BusComms.WriteRegister(0x25, 0xFF);
             BusComms.WriteRegister(0x75, 0x00);
+
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x4E, 0x2C);
             BusComms.WriteRegister(0x48, 0x00);
             BusComms.WriteRegister(0x30, 0x20);
+
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x30, 0x09);
             BusComms.WriteRegister(0x54, 0x00);
@@ -182,15 +236,18 @@ namespace Meadow.Foundation.Sensors.Distance
             BusComms.WriteRegister(0x64, 0x00);
             BusComms.WriteRegister(0x65, 0x00);
             BusComms.WriteRegister(0x66, 0xA0);
+
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x22, 0x32);
             BusComms.WriteRegister(0x47, 0x14);
             BusComms.WriteRegister(0x49, 0xFF);
             BusComms.WriteRegister(0x4A, 0x00);
+            
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x7A, 0x0A);
             BusComms.WriteRegister(0x7B, 0x00);
             BusComms.WriteRegister(0x78, 0x21);
+            
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x23, 0x34);
             BusComms.WriteRegister(0x42, 0x00);
@@ -201,14 +258,17 @@ namespace Meadow.Foundation.Sensors.Distance
             BusComms.WriteRegister(0x0E, 0x06);
             BusComms.WriteRegister(0x20, 0x1A);
             BusComms.WriteRegister(0x43, 0x40);
+            
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x34, 0x03);
             BusComms.WriteRegister(0x35, 0x44);
+            
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x31, 0x04);
             BusComms.WriteRegister(0x4B, 0x09);
             BusComms.WriteRegister(0x4C, 0x05);
             BusComms.WriteRegister(0x4D, 0x04);
+            
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x44, 0x00);
             BusComms.WriteRegister(0x45, 0x20);
@@ -220,11 +280,14 @@ namespace Meadow.Foundation.Sensors.Distance
             BusComms.WriteRegister(0x72, 0xFE);
             BusComms.WriteRegister(0x76, 0x00);
             BusComms.WriteRegister(0x77, 0x00);
+            
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x0D, 0x01);
+            
             BusComms.WriteRegister(0xFF, 0x00);
             BusComms.WriteRegister(0x80, 0x01);
             BusComms.WriteRegister(0x01, 0xF8);
+            
             BusComms.WriteRegister(0xFF, 0x01);
             BusComms.WriteRegister(0x8E, 0x01);
             BusComms.WriteRegister(0x00, 0x01);
@@ -235,12 +298,18 @@ namespace Meadow.Foundation.Sensors.Distance
             var gpio_hv_mux_active_high = Read((byte)Register.GpioHvMuxActiveHigh);
             BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, (byte)(gpio_hv_mux_active_high & ~0x10));
 
-            BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, 0x01);
+            // TODO: shouldn't this be system interrupt clear, 0x0B? It looks like it's overwriting the previous statement
+            // BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, 0x01);
+            BusComms.WriteRegister((byte)Register.SystemInterruptClear, 0x01);
+
             BusComms.WriteRegister((byte)Register.SystemSequenceConfig, 0xE8);
 
             BusComms.WriteRegister((byte)Register.SystemSequenceConfig, 0x01);
+            
             PerformSingleRefCalibration(0x40);
+            
             BusComms.WriteRegister((byte)Register.SystemSequenceConfig, 0x02);
+            
             PerformSingleRefCalibration(0x00);
 
             BusComms.WriteRegister((byte)Register.SystemSequenceConfig, 0xE8);
@@ -372,7 +441,9 @@ namespace Meadow.Foundation.Sensors.Distance
         /// <exception cref="Exception"></exception>
         protected void PerformSingleRefCalibration(byte vhvInitByte)
         {
-            BusComms.WriteRegister((byte)Register.RangeStart, (byte)(0x01 | vhvInitByte & 0xFF));
+//            BusComms.WriteRegister((byte)Register.RangeStart, (byte)(0x01 | vhvInitByte & 0xFF));
+// following https://github.com/pololu/vl53l0x-arduino/blob/master/VL53L0X.cpp
+            BusComms.WriteRegister((byte)Register.RangeStart, (byte)(0x01 | vhvInitByte));
 
             int tCount = 0;
 
@@ -386,7 +457,10 @@ namespace Meadow.Foundation.Sensors.Distance
                 }
             }
 
-            BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, 0x01);
+// following https://github.com/pololu/vl53l0x-arduino/blob/master/VL53L0X.cpp
+//            BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, 0x01);
+            BusComms.WriteRegister((byte)Register.SystemInterruptClear, 0x01);
+
             BusComms.WriteRegister((byte)Register.RangeStart, 0x00);
         }
 
@@ -439,7 +513,10 @@ namespace Meadow.Foundation.Sensors.Distance
             }
 
             var range_mm = Read16((byte)Register.ResultRangeStatus + 10);
-            BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, 0x01);
+
+// Following guidance from https://github.com/pololu/vl53l0x-arduino/blob/master/VL53L0X.cpp#L813
+//            BusComms.WriteRegister((byte)Register.GpioHvMuxActiveHigh, 0x01);
+            BusComms.WriteRegister((byte)Register.SystemInterruptClear, 0x01);
 
             return range_mm;
         }
